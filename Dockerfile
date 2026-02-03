@@ -29,6 +29,16 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
+# Dummy env vars needed for build (will be overridden at runtime)
+ENV DATABASE_URL="mongodb://localhost:27017/dummy"
+ENV AUTH_SECRET="build-time-secret-will-be-overridden"
+ENV AUTH_URL="http://localhost:3000"
+ENV GROQ_API_KEY="dummy"
+ENV GEM_API_KEYS="dummy"
+ENV JINA_API_KEY="dummy"
+ENV QDRANT_CONTAINER_URL="http://localhost:6333"
+ENV QDRANT_API_KEY="dummy"
+
 # Build the application
 RUN npm run build
 
