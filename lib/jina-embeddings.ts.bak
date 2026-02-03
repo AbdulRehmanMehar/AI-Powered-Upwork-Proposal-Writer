@@ -1,0 +1,378 @@
+/**
+ * Jina AI Embeddings Utility
+ * With rate limiting and MongoDB usage tracking
+ */
+
+import mongoose, { Schema, Document, Model } from 'mongoose';
+
+// ============================================
+// Configuration
+// ============================================
+
+const JINA_API_URL = 'https://api.jina.ai/v1/embeddings';
+const JINA_MODEL = 'jina-embeddings-v2-base-en';
+
+// Free tier limits: 100 RPM & 100,000 TPM
+const RATE_LIMITS = {
+  requestsPerMinute: 100,
+  tokensPerMinute: 100_000,
+};
+
+// Batch settings
+const BATCH_SIZE = 32; // Max texts per request
+const MIN_DELAY_BETWEEN_REQUESTS_MS = 600; // ~100 RPM = 1 request per 600ms
+
+// ============================================
+// MongoDB Schema for Usage Tracking
+// ============================================
+
+export interface IJinaUsage extends Document {
+  timestamp: Date;
+  requests: number;
+  tokens: number;
+  modelName: string;
+  operation: 'embed_single' | 'embed_batch' | 'ingest';
+  batchSize?: number;
+  success: boolean;
+  errorMessage?: string;
+}
+
+const JinaUsageSchema = new Schema<IJinaUsage>({
+  timestamp: { type: Date, default: Date.now, index: true },
+  requests: { type: Number, required: true },
+  tokens: { type: Number, required: true },
+  modelName: { type: String, required: true },
+  operation: { type: String, required: true, enum: ['embed_single', 'embed_batch', 'ingest'] },
+  batchSize: { type: Number },
+  success: { type: Boolean, required: true },
+  errorMessage: { type: String },
+});
+
+// Compound index for rate limit queries
+JinaUsageSchema.index({ timestamp: -1, success: 1 });
+
+// TTL index - automatically delete records older than 30 days
+JinaUsageSchema.index({ timestamp: 1 }, { expireAfterSeconds: 30 * 24 * 60 * 60 });
+
+export const JinaUsage: Model<IJinaUsage> = mongoose.models.JinaUsage || 
+  mongoose.model<IJinaUsage>('JinaUsage', JinaUsageSchema);
+
+// ============================================
+// Rate Limiter
+// ============================================
+
+interface RateLimitState {
+  requestsThisMinute: number;
+  tokensThisMinute: number;
+  minuteStart: number;
+  lastRequestTime: number;
+}
+
+const rateLimitState: RateLimitState = {
+  requestsThisMinute: 0,
+  tokensThisMinute: 0,
+  minuteStart: Date.now(),
+  lastRequestTime: 0,
+};
+
+/**
+ * Check and wait for rate limits
+ */
+async function waitForRateLimit(estimatedTokens: number): Promise<void> {
+  const now = Date.now();
+  
+  // Reset counters if minute has passed
+  if (now - rateLimitState.minuteStart >= 60_000) {
+    rateLimitState.requestsThisMinute = 0;
+    rateLimitState.tokensThisMinute = 0;
+    rateLimitState.minuteStart = now;
+  }
+  
+  // Check if we'd exceed limits
+  const wouldExceedRequests = rateLimitState.requestsThisMinute >= RATE_LIMITS.requestsPerMinute;
+  const wouldExceedTokens = rateLimitState.tokensThisMinute + estimatedTokens > RATE_LIMITS.tokensPerMinute;
+  
+  if (wouldExceedRequests || wouldExceedTokens) {
+    // Wait until next minute
+    const waitTime = 60_000 - (now - rateLimitState.minuteStart) + 100;
+    console.log(`⏳ Rate limit approaching, waiting ${Math.ceil(waitTime / 1000)}s...`);
+    await delay(waitTime);
+    
+    // Reset counters
+    rateLimitState.requestsThisMinute = 0;
+    rateLimitState.tokensThisMinute = 0;
+    rateLimitState.minuteStart = Date.now();
+  }
+  
+  // Ensure minimum delay between requests
+  const timeSinceLastRequest = now - rateLimitState.lastRequestTime;
+  if (timeSinceLastRequest < MIN_DELAY_BETWEEN_REQUESTS_MS) {
+    await delay(MIN_DELAY_BETWEEN_REQUESTS_MS - timeSinceLastRequest);
+  }
+}
+
+/**
+ * Update rate limit counters after a request
+ */
+function updateRateLimitCounters(tokens: number): void {
+  rateLimitState.requestsThisMinute++;
+  rateLimitState.tokensThisMinute += tokens;
+  rateLimitState.lastRequestTime = Date.now();
+}
+
+// ============================================
+// Usage Tracking
+// ============================================
+
+/**
+ * Log usage to MongoDB
+ */
+async function logUsage(
+  tokens: number,
+  operation: 'embed_single' | 'embed_batch' | 'ingest',
+  success: boolean,
+  batchSize?: number,
+  errorMessage?: string
+): Promise<void> {
+  try {
+    // Only log if mongoose is connected
+    if (mongoose.connection.readyState !== 1) {
+      console.log('MongoDB not connected, skipping usage log');
+      return;
+    }
+    
+    await JinaUsage.create({
+      timestamp: new Date(),
+      requests: 1,
+      tokens,
+      modelName: JINA_MODEL,
+      operation,
+      batchSize,
+      success,
+      errorMessage,
+    });
+  } catch (error) {
+    console.error('Failed to log Jina usage:', error);
+    // Don't throw - logging failure shouldn't break embeddings
+  }
+}
+
+/**
+ * Get usage statistics
+ */
+export async function getJinaUsageStats(periodHours: number = 24): Promise<{
+  totalRequests: number;
+  totalTokens: number;
+  successRate: number;
+  byOperation: Record<string, { requests: number; tokens: number }>;
+}> {
+  const since = new Date(Date.now() - periodHours * 60 * 60 * 1000);
+  
+  const stats = await JinaUsage.aggregate([
+    { $match: { timestamp: { $gte: since } } },
+    {
+      $group: {
+        _id: null,
+        totalRequests: { $sum: '$requests' },
+        totalTokens: { $sum: '$tokens' },
+        successCount: { $sum: { $cond: ['$success', 1, 0] } },
+        totalCount: { $sum: 1 },
+      },
+    },
+  ]);
+  
+  const byOperation = await JinaUsage.aggregate([
+    { $match: { timestamp: { $gte: since } } },
+    {
+      $group: {
+        _id: '$operation',
+        requests: { $sum: '$requests' },
+        tokens: { $sum: '$tokens' },
+      },
+    },
+  ]);
+  
+  const result = stats[0] || { totalRequests: 0, totalTokens: 0, successCount: 0, totalCount: 0 };
+  
+  return {
+    totalRequests: result.totalRequests,
+    totalTokens: result.totalTokens,
+    successRate: result.totalCount > 0 ? result.successCount / result.totalCount : 1,
+    byOperation: byOperation.reduce((acc, op) => {
+      acc[op._id] = { requests: op.requests, tokens: op.tokens };
+      return acc;
+    }, {} as Record<string, { requests: number; tokens: number }>),
+  };
+}
+
+/**
+ * Get current rate limit status
+ */
+export function getRateLimitStatus(): {
+  requestsUsed: number;
+  requestsLimit: number;
+  tokensUsed: number;
+  tokensLimit: number;
+  resetsIn: number;
+} {
+  const now = Date.now();
+  const resetsIn = Math.max(0, 60_000 - (now - rateLimitState.minuteStart));
+  
+  return {
+    requestsUsed: rateLimitState.requestsThisMinute,
+    requestsLimit: RATE_LIMITS.requestsPerMinute,
+    tokensUsed: rateLimitState.tokensThisMinute,
+    tokensLimit: RATE_LIMITS.tokensPerMinute,
+    resetsIn,
+  };
+}
+
+// ============================================
+// API Types
+// ============================================
+
+interface JinaEmbeddingResponse {
+  model: string;
+  object: string;
+  usage: {
+    total_tokens: number;
+    prompt_tokens: number;
+  };
+  data: Array<{
+    object: string;
+    index: number;
+    embedding: number[];
+  }>;
+}
+
+// ============================================
+// Main Functions
+// ============================================
+
+/**
+ * Estimate tokens for a text (rough approximation: ~4 chars per token)
+ */
+function estimateTokens(texts: string[]): number {
+  return texts.reduce((sum, text) => sum + Math.ceil(text.length / 4), 0);
+}
+
+/**
+ * Generate embeddings for a single text
+ */
+export async function generateEmbedding(text: string): Promise<number[]> {
+  const embeddings = await generateEmbeddings([text], 'embed_single');
+  return embeddings[0];
+}
+
+/**
+ * Generate embeddings for multiple texts (handles batching and rate limiting)
+ */
+export async function generateEmbeddings(
+  texts: string[], 
+  operation: 'embed_single' | 'embed_batch' | 'ingest' = 'embed_batch'
+): Promise<number[][]> {
+  const apiKey = process.env.JINA_API_KEY;
+  if (!apiKey) {
+    throw new Error('JINA_API_KEY environment variable is not set');
+  }
+  
+  const allEmbeddings: number[][] = [];
+  let totalTokensUsed = 0;
+
+  // Process in batches
+  for (let i = 0; i < texts.length; i += BATCH_SIZE) {
+    const batch = texts.slice(i, i + BATCH_SIZE);
+    const estimatedTokens = estimateTokens(batch);
+    
+    // Wait for rate limit
+    await waitForRateLimit(estimatedTokens);
+    
+    try {
+      const response = await fetch(JINA_API_URL, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: JINA_MODEL,
+          input: batch,
+          truncate: true, // Auto-truncate texts that exceed model max
+        }),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        
+        // Handle rate limit errors specially
+        if (response.status === 429) {
+          console.log('⚠️ Hit rate limit, waiting 60s...');
+          await logUsage(0, operation, false, batch.length, 'Rate limited');
+          await delay(60_000);
+          
+          // Retry this batch
+          i -= BATCH_SIZE;
+          continue;
+        }
+        
+        await logUsage(0, operation, false, batch.length, `${response.status}: ${errorText}`);
+        throw new Error(`Jina API error: ${response.status} - ${errorText}`);
+      }
+
+      const data: JinaEmbeddingResponse = await response.json();
+      const tokensUsed = data.usage?.total_tokens || estimatedTokens;
+      totalTokensUsed += tokensUsed;
+      
+      // Update rate limit counters
+      updateRateLimitCounters(tokensUsed);
+      
+      // Log successful usage
+      await logUsage(tokensUsed, operation, true, batch.length);
+      
+      // Sort by index to maintain order
+      const sortedEmbeddings = data.data
+        .sort((a, b) => a.index - b.index)
+        .map(item => item.embedding);
+      
+      allEmbeddings.push(...sortedEmbeddings);
+      
+      // Progress logging for large batches
+      if (texts.length > BATCH_SIZE) {
+        const progress = Math.min(100, Math.round(((i + batch.length) / texts.length) * 100));
+        console.log(`  📊 Embeddings: ${progress}% (${i + batch.length}/${texts.length}), ${totalTokensUsed} tokens used`);
+      }
+
+    } catch (error) {
+      console.error(`Error generating embeddings for batch starting at ${i}:`, error);
+      await logUsage(0, operation, false, batch.length, error instanceof Error ? error.message : 'Unknown error');
+      throw error;
+    }
+  }
+
+  return allEmbeddings;
+}
+
+/**
+ * Cosine similarity between two vectors
+ */
+export function cosineSimilarity(a: number[], b: number[]): number {
+  if (a.length !== b.length) {
+    throw new Error('Vectors must have the same length');
+  }
+
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
