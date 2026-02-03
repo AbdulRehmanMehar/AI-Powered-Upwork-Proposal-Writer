@@ -15,21 +15,17 @@ services:
     environment:
       - NODE_ENV=production
       # Database
-      - MONGODB_URI=${MONGODB_URI}
+      - DATABASE_URL=${DATABASE_URL}
       # Auth
       - AUTH_SECRET=${AUTH_SECRET}
-      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:3000}
+      - AUTH_URL=${AUTH_URL:-http://localhost:3000}
       # AI/LLM APIs
       - GROQ_API_KEY=${GROQ_API_KEY}
-      - GROQ_API_KEY_2=${GROQ_API_KEY_2}
-      - GROQ_API_KEY_3=${GROQ_API_KEY_3}
-      - GROQ_API_KEY_4=${GROQ_API_KEY_4}
-      - GROQ_API_KEY_5=${GROQ_API_KEY_5}
+      - GEM_API_KEYS=${GEM_API_KEYS}
       # Embeddings
-      - GEMINI_API_KEY=${GEMINI_API_KEY}
       - JINA_API_KEY=${JINA_API_KEY}
       # Vector DB
-      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_CONTAINER_URL=${QDRANT_CONTAINER_URL}
       - QDRANT_API_KEY=${QDRANT_API_KEY}
     extra_hosts:
       - "host.docker.internal:host-gateway"
