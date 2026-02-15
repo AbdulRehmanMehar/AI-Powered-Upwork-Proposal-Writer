@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
-import { getLoadBalancer } from '@/lib/groq-load-balancer';
+import { getLoadBalancer } from '@/lib/ollama-client';
 import { UserProfile } from '@/lib/proposal-generator';
 
 // System prompt for answering job questions

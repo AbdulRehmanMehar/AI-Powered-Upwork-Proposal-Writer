@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
 import { connectToDatabase } from '@/lib/db/connection';
 import { Proposal, UserFeedbackLearning } from '@/lib/db/models';
-import { getLoadBalancer } from '@/lib/groq-load-balancer';
+import { getLoadBalancer } from '@/lib/ollama-client';
 
 // ============================================
 // Feedback Reviewer System Prompt

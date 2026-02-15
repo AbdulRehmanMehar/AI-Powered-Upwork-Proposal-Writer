@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { getLoadBalancer } from '@/lib/groq-load-balancer';
+import { getLoadBalancer } from '@/lib/ollama-client';
 
 export async function GET() {
   try {

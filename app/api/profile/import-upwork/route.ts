@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@/lib/auth';
-import { getLoadBalancer } from '@/lib/groq-load-balancer';
+import { getLoadBalancer } from '@/lib/ollama-client';
 
 // Extract Upwork username from various URL formats
 function extractUpworkUsername(input: string): string | null {

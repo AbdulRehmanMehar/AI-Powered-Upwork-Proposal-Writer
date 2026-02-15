@@ -243,6 +243,11 @@ export default function SettingsPage() {
         throw new Error(data.error || 'Failed to save');
       }
 
+      // Re-sync profile embeddings in the background (so vector search uses fresh data)
+      fetch('/api/profile/embeddings', { method: 'POST' })
+        .then(r => r.ok ? console.log('✅ Profile embeddings refreshed') : console.warn('⚠️ Embedding refresh failed'))
+        .catch(e => console.warn('⚠️ Embedding refresh error:', e));
+
       setSuccess(true);
       setTimeout(() => setSuccess(false), 3000);
     } catch (err) {

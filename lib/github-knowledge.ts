@@ -439,7 +439,8 @@ export async function embedUserGitHubProjects(
 export async function retrieveRelevantProjects(
   userId: string,
   jobDescription: string,
-  topK: number = 5
+  topK: number = 5,
+  precomputedEmbedding?: number[]
 ): Promise<Array<{
   repoName: string;
   repoUrl: string;
@@ -452,8 +453,8 @@ export async function retrieveRelevantProjects(
     await ensureCollection();
     const client = getQdrantClient();
 
-    // Generate embedding for job description
-    const queryEmbedding = await generateEmbedding(jobDescription);
+    // Use precomputed embedding or generate one
+    const queryEmbedding = precomputedEmbedding || await generateEmbedding(jobDescription);
     if (!queryEmbedding) {
       console.error('Failed to generate query embedding');
       return [];

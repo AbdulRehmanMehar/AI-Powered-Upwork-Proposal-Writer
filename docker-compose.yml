@@ -19,8 +19,9 @@ services:
       # Auth
       - AUTH_SECRET=${AUTH_SECRET}
       - AUTH_URL=${AUTH_URL:-http://localhost:3000}
-      # AI/LLM APIs
-      - GROQ_API_KEY=${GROQ_API_KEY}
+      # AI/LLM — local Ollama
+      - OLLAMA_URL=${OLLAMA_URL:-http://192.168.1.9:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5:7b}
       - GEM_API_KEYS=${GEM_API_KEYS}
       # Embeddings
       - JINA_API_KEY=${JINA_API_KEY}
@@ -35,8 +36,3 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    logging:
-      driver: gelf
-      options:
-        gelf-address: ${GELF_ADDRESS}
-        tag: "{{.Name}}"

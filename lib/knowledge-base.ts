@@ -249,7 +249,8 @@ export interface RetrievalOptions {
  */
 export async function retrieveKnowledge(
   query: string,
-  options: RetrievalOptions = {}
+  options: RetrievalOptions = {},
+  precomputedEmbedding?: number[]
 ): Promise<RetrievedKnowledge[]> {
   const client = getQdrantClient();
   const { 
@@ -261,8 +262,8 @@ export async function retrieveKnowledge(
     limit = 5 
   } = options;
   
-  // Generate embedding for query
-  const queryEmbedding = await generateEmbedding(query);
+  // Use precomputed embedding or generate one
+  const queryEmbedding = precomputedEmbedding || await generateEmbedding(query);
   
   // Build filter
   const mustConditions: any[] = [];
@@ -367,7 +368,8 @@ export async function retrieveWinningProposals(
  * Retrieve examples for each section of a proposal
  */
 export async function retrieveProposalExamples(
-  jobDescription: string
+  jobDescription: string,
+  precomputedEmbedding?: number[]
 ): Promise<{
   hooks: RetrievedKnowledge[];
   proofs: RetrievedKnowledge[];
@@ -375,32 +377,35 @@ export async function retrieveProposalExamples(
   pss: RetrievedKnowledge[];
   banned: RetrievedKnowledge[];
 }> {
-  // Run all retrievals in parallel
+  // Embed once and reuse across all 5 searches
+  const embedding = precomputedEmbedding || await generateEmbedding(jobDescription);
+
+  // Run all retrievals in parallel (all reuse the same embedding)
   const [hooks, proofs, ctas, pss, banned] = await Promise.all([
     retrieveKnowledge(jobDescription, { 
       category: 'hook', 
       onlyGoodExamples: true, 
       limit: 3 
-    }),
+    }, embedding),
     retrieveKnowledge(jobDescription, { 
       category: 'proof', 
       onlyGoodExamples: true, 
       limit: 3 
-    }),
+    }, embedding),
     retrieveKnowledge(jobDescription, { 
       category: 'cta', 
       onlyGoodExamples: true, 
       limit: 3 
-    }),
+    }, embedding),
     retrieveKnowledge(jobDescription, { 
       category: 'ps', 
       onlyGoodExamples: true, 
       limit: 2 
-    }),
+    }, embedding),
     retrieveKnowledge(jobDescription, { 
       category: 'banned', 
       limit: 3 
-    }),
+    }, embedding),
   ]);
   
   return { hooks, proofs, ctas, pss, banned };

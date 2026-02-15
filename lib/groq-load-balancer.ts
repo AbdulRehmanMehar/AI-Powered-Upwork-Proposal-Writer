@@ -281,6 +281,8 @@ export class GroqLoadBalancer {
       maxTokens?: number;
       preferredModel?: string;
       triedModels?: string[]; // Track models we've already tried to avoid loops
+      responseFormat?: 'json' | 'text';
+      jsonSchema?: Record<string, unknown>; // Note: Groq doesn't enforce schemas, only JSON mode
     } = {}
   ): Promise<LoadBalancerResult> {
     const startTime = Date.now();
@@ -318,12 +320,19 @@ export class GroqLoadBalancer {
     }
 
     try {
-      const response = await this.groq.chat.completions.create({
+      const requestBody: any = {
         model: selectedModel.modelId,
         messages,
         temperature: options.temperature ?? 0.7,
         max_tokens: options.maxTokens ?? 2048,
-      });
+      };
+
+      // Groq supports response_format for JSON mode (but not enforced schemas)
+      if (options.responseFormat === 'json' || options.jsonSchema) {
+        requestBody.response_format = { type: 'json_object' };
+      }
+
+      const response = await this.groq.chat.completions.create(requestBody);
 
       const duration = Date.now() - startTime;
       const usage = response.usage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 };

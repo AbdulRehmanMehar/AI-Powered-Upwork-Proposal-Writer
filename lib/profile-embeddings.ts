@@ -254,12 +254,29 @@ function parseResumeForProjects(userId: string, resumeText: string): ProfileChun
 function parseAdditionalDetails(userId: string, details: string): ProfileChunk[] {
   const chunks: ProfileChunk[] = [];
   
+  // Pre-filter: strip JSON blocks, code blocks, and metadata sections
+  let cleaned = details;
+  // Remove JSON objects/arrays (including multi-line)
+  cleaned = cleaned.replace(/[{\[][\s\S]*?[}\]]/g, (match) => {
+    // Only strip if it looks like JSON (has "key": patterns)
+    if (/"\w+"\s*:/.test(match)) return '';
+    return match;
+  });
+  // Remove code blocks
+  cleaned = cleaned.replace(/```[\s\S]*?```/g, '');
+  // Remove lines that are SEO/metadata fields
+  cleaned = cleaned.replace(/^\s*"?(?:seo_focus_keywords|focus_keywords|meta_description|meta_title|slug|canonical_url|og_image)"?\s*:.*/gim, '');
+  
   // Split by double newlines (paragraphs) or headers
-  const sections = details.split(/\n\n+|(?=#{1,3}\s)/);
+  const sections = cleaned.split(/\n\n+|(?=#{1,3}\s)/);
   
   for (const section of sections) {
     const trimmed = section.trim();
     if (trimmed.length < 30) continue;
+    
+    // Skip sections that still look like metadata/JSON remnants
+    if (/"\w+"\s*:/.test(trimmed)) continue;
+    if (/^\s*[{\[]/.test(trimmed)) continue;
     
     // Determine type based on content
     let type: ProfileChunkType = 'project';
@@ -448,13 +465,14 @@ export interface ProfileRetrievalOptions {
 export async function retrieveRelevantProfile(
   userId: string,
   jobDescription: string,
-  options: ProfileRetrievalOptions = {}
+  options: ProfileRetrievalOptions = {},
+  precomputedEmbedding?: number[]
 ): Promise<RetrievedProfileChunk[]> {
   const client = getQdrantClient();
   const { types, industry, technologies, limit = 5 } = options;
   
-  // Generate embedding for job description
-  const queryEmbedding = await generateEmbedding(jobDescription);
+  // Use precomputed embedding or generate one
+  const queryEmbedding = precomputedEmbedding || await generateEmbedding(jobDescription);
   
   // Build filter
   const mustConditions: any[] = [
@@ -507,7 +525,8 @@ export async function retrieveRelevantProfile(
  */
 export async function retrieveProfileForProposal(
   userId: string,
-  jobDescription: string
+  jobDescription: string,
+  precomputedEmbedding?: number[]
 ): Promise<{
   bestProject: RetrievedProfileChunk | null;
   achievements: RetrievedProfileChunk[];
@@ -515,13 +534,16 @@ export async function retrieveProfileForProposal(
   testimonials: RetrievedProfileChunk[];
   summary: RetrievedProfileChunk | null;
 }> {
-  // Run multiple searches in parallel for different content types
+  // Embed once and reuse across all 5 parallel searches
+  const embedding = precomputedEmbedding || await generateEmbedding(jobDescription);
+
+  // Run multiple searches in parallel (all reuse the same embedding)
   const [projects, achievements, skills, testimonials, summary] = await Promise.all([
-    retrieveRelevantProfile(userId, jobDescription, { types: ['project', 'client_work'], limit: 3 }),
-    retrieveRelevantProfile(userId, jobDescription, { types: ['achievement'], limit: 3 }),
-    retrieveRelevantProfile(userId, jobDescription, { types: ['skill_context'], limit: 1 }),
-    retrieveRelevantProfile(userId, jobDescription, { types: ['testimonial'], limit: 2 }),
-    retrieveRelevantProfile(userId, jobDescription, { types: ['summary'], limit: 1 }),
+    retrieveRelevantProfile(userId, jobDescription, { types: ['project', 'client_work'], limit: 3 }, embedding),
+    retrieveRelevantProfile(userId, jobDescription, { types: ['achievement'], limit: 3 }, embedding),
+    retrieveRelevantProfile(userId, jobDescription, { types: ['skill_context'], limit: 1 }, embedding),
+    retrieveRelevantProfile(userId, jobDescription, { types: ['testimonial'], limit: 2 }, embedding),
+    retrieveRelevantProfile(userId, jobDescription, { types: ['summary'], limit: 1 }, embedding),
   ]);
   
   return {

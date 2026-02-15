@@ -9,25 +9,49 @@ import {
   getUserProfileStats,
   clearUserProfileChunks 
 } from '@/lib/profile-embeddings';
+import { auth } from '@/lib/auth';
+import { connectToDatabase } from '@/lib/db/connection';
+import User from '@/lib/db/user';
 
 // POST /api/profile/embeddings - Update profile embeddings
+// Accepts either { userId, profile } in body, or uses session auth + DB lookup
 export async function POST(request: NextRequest) {
   try {
-    const body = await request.json();
-    const { userId, profile } = body;
-    
-    if (!userId) {
-      return NextResponse.json(
-        { error: 'userId is required' },
-        { status: 400 }
-      );
+    let userId: string | undefined;
+    let profile: Record<string, unknown> | undefined;
+
+    // Try parsing body (may be empty if called from settings page auto-sync)
+    try {
+      const body = await request.json();
+      userId = body.userId;
+      profile = body.profile;
+    } catch {
+      // Empty body — will fall back to session auth below
     }
-    
+
+    // If no userId in body, get from session
+    if (!userId) {
+      const session = await auth();
+      if (!session?.user?.id) {
+        return NextResponse.json(
+          { error: 'userId is required (provide in body or be authenticated)' },
+          { status: 401 }
+        );
+      }
+      userId = session.user.id;
+    }
+
+    // If no profile in body, fetch from DB
     if (!profile || typeof profile !== 'object') {
-      return NextResponse.json(
-        { error: 'profile object is required' },
-        { status: 400 }
-      );
+      await connectToDatabase();
+      const user = await User.findById(userId).select('profile').lean();
+      if (!user?.profile) {
+        return NextResponse.json(
+          { error: 'No profile found for user' },
+          { status: 404 }
+        );
+      }
+      profile = user.profile as Record<string, unknown>;
     }
     
     console.log(`Updating profile embeddings for user: ${userId}`);
