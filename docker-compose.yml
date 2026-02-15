@@ -28,6 +28,7 @@ services:
       # Vector DB
       - QDRANT_CONTAINER_URL=${QDRANT_CONTAINER_URL}
       - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     healthcheck:
